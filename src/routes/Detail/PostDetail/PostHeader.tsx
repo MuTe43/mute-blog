@@ -5,12 +5,27 @@ import { formatDate } from "src/libs/utils"
 import Image from "next/image"
 import React from "react"
 import styled from "@emotion/styled"
+import usePostQuery from "src/hooks/usePostQuery"
 
 type Props = {
   data: TPost
 }
 
+function getReadingTime(source: any): number {
+  // Estimate from MDX compiled source
+  const text =
+    typeof source?.compiledSource === "string" ? source.compiledSource : ""
+  const words = text.split(/\s+/).filter(Boolean).length
+  // compiledSource includes JSX markup, so divide more conservatively
+  return Math.max(1, Math.round(words / 300))
+}
+
 const PostHeader: React.FC<Props> = ({ data }) => {
+  const postDetail = usePostQuery()
+  const readingTime = postDetail?.mdxSource
+    ? getReadingTime(postDetail.mdxSource)
+    : null
+
   return (
     <StyledWrapper>
       <h1 className="title">{data.title}</h1>
@@ -38,6 +53,12 @@ const PostHeader: React.FC<Props> = ({ data }) => {
                 CONFIG.lang
               )}
             </div>
+            {readingTime && (
+              <>
+                <div className="hr"></div>
+                <div className="reading-time">{readingTime} min read</div>
+              </>
+            )}
           </div>
           <div className="mid">
             {data.tags && (
@@ -98,6 +119,10 @@ const StyledWrapper = styled.div`
         @media (min-width: 768px) {
           margin-left: 0;
         }
+      }
+      .reading-time {
+        font-size: 0.875rem;
+        color: ${({ theme }) => theme.colors.gray10};
       }
     }
     > .mid {

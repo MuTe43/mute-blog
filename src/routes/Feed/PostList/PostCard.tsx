@@ -69,9 +69,9 @@ const StyledWrapper = styled(Link)`
     border-radius: 1rem;
     background-color: ${({ theme }) =>
       theme.scheme === "light" ? "white" : theme.colors.gray4};
-    transition-property: box-shadow;
-    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-    transition-duration: 300ms;
+    transition: box-shadow 0.2s ease, transform 0.2s ease,
+      border-color 0.2s ease;
+    border: 1px solid transparent;
 
     @media (min-width: 768px) {
       margin-bottom: 2rem;
@@ -80,6 +80,8 @@ const StyledWrapper = styled(Link)`
     :hover {
       box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1),
         0 4px 6px -2px rgba(0, 0, 0, 0.05);
+      transform: translateY(-2px);
+      border-color: ${({ theme }) => theme.colors.gray6};
     }
     > .category {
       position: absolute;
