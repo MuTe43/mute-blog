@@ -1,0 +1,171 @@
+---
+title: "Building VeyNova — An Edge Hosting Platform From Scratch"
+slug: "building-veynova"
+date: "2025-06-20"
+status: "Public"
+type: "Post"
+tags: ["cloudflare", "nextjs", "edge", "devtools", "project"]
+category: "Projects"
+summary: "How I'm building VeyNova — a two-command edge hosting platform powered by Cloudflare Workers, R2, and a custom CLI."
+thumbnail: ""
+fullWidth: false
+author:
+  name: "Wajdi"
+---
+
+# Building VeyNova — An Edge Hosting Platform From Scratch
+
+Deploying a static site shouldn't require a 200-line YAML config, three different dashboards, and a prayer. That frustration is what led me to start building **VeyNova** — an edge-first web hosting platform designed around one principle: **two commands and you're live**.
+
+```bash
+veynova init
+veynova deploy
+```
+
+That's it. No CI manifests. No build configs. Your site goes straight to 200+ Cloudflare edge nodes worldwide.
+
+---
+
+## The Architecture
+
+VeyNova is a monorepo with three independent services, each responsible for a distinct layer of the platform:
+
+### 1. The CLI (`veynova`)
+
+The CLI is the developer's main interface. It's built with **Node.js** and **Commander.js**, and published to npm as `veynova`.
+
+**`veynova init`** scaffolds your project — it creates a `veynova.json` config file and auto-generates a GitHub Actions workflow so future pushes to `main` trigger deploys automatically.
+
+**`veynova deploy`** handles the heavy lifting:
+- Scans your build directory for deployable files
+- Validates your Cloudflare credentials
+- Checks plan limits against Supabase (free tier = 3 projects)
+- Uploads each file to **Cloudflare R2** with progress reporting
+- Records deployment metadata to the database
+
+```javascript
+// Every file gets uploaded individually to R2
+// with the key: {projectName}/{relativePath}
+const key = `${projectName}/${relativePath}`;
+await uploadToR2(key, fileBuffer, mimeType);
+```
+
+### 2. The Edge Worker (`veynova-router`)
+
+This is where the magic happens. A **Cloudflare Worker** sits at the edge and routes incoming requests to the right files in R2 storage.
+
+When someone visits `my-portfolio.veynova.app`, the worker:
+
+1. Extracts the project name from the subdomain (`my-portfolio`)
+2. Maps the URL path to an R2 key (`my-portfolio/index.html`)
+3. Fetches the file from the R2 bucket
+4. Returns it with the correct `Content-Type` and cache headers
+
+Every deployed site automatically gets a `*.veynova.app` subdomain. The response is served from the nearest edge node with aggressive caching — `max-age=3600` with `stale-while-revalidate=86400`.
+
+### 3. The Dashboard (`veynova-dashboard`)
+
+A **Next.js 16** web app with a dark, terminal-inspired UI. This is the control plane where users manage their projects, monitor deployments, and handle billing.
+
+**Tech stack:**
+- **Next.js** (App Router, React 19) — Server components for data fetching
+- **Clerk** — Authentication and user management
+- **Supabase** — Database for projects, deployments, and subscriptions
+- **Stripe** — Billing with checkout, portal, and webhook handling
+- **Tailwind CSS v4** — Styling with custom CSS variables
+
+The dashboard gives you visibility into:
+- **Projects** — All your deployed sites with live status indicators
+- **Deployments** — History of every deploy with commit info, file count, and duration
+- **Billing** — Free tier (3 projects) or Pro ($9/month, unlimited)
+
+---
+
+## The Deploy Flow, End to End
+
+Here's what happens from the moment you run `veynova deploy` to your site being live globally:
+
+```
+Terminal                  Cloudflare R2              Edge Worker
+   │                          │                          │
+   ├─ scan build dir          │                          │
+   ├─ check plan limits ──── Supabase ──── OK           │
+   ├─ upload file 1 ────────► stored                     │
+   ├─ upload file 2 ────────► stored                     │
+   ├─ upload file N ────────► stored                     │
+   ├─ record deployment ──── Supabase                    │
+   │                          │                          │
+   │    User visits site      │                          │
+   │                          │◄──── fetch file ─────────┤
+   │                          ├────► return file ────────►│──► User
+```
+
+No build step on the server. No container spin-up. Files go from your machine to R2, and the worker serves them instantly from the edge.
+
+---
+
+## CI/CD Out of the Box
+
+When you run `veynova init`, it generates a GitHub Actions workflow:
+
+```yaml
+# .github/workflows/deploy.yml (auto-generated)
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm i -g veynova
+      - run: veynova deploy
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+```
+
+Push to `main` and your site redeploys. No configuration beyond adding two secrets to your GitHub repo.
+
+---
+
+## Design Decisions
+
+**Why Cloudflare R2 + Workers?**
+R2 has zero egress fees. That's a big deal for a hosting platform — bandwidth costs don't scale with traffic. Workers run at the edge in 200+ cities, so latency is minimal regardless of where your users are.
+
+**Why a CLI-first approach?**
+Developers live in the terminal. A CLI that does one thing well (deploy) is more useful than a dashboard with a drag-and-drop uploader. The dashboard exists for monitoring, not as the primary deploy mechanism.
+
+**Why Supabase for the database?**
+Fast to set up, Postgres under the hood, row-level security for multi-tenancy, and a generous free tier. It handles projects, deployments, and subscription state without needing to manage infrastructure.
+
+---
+
+## What's Next
+
+VeyNova is currently in **Phase 2** (frontend prototyping). The dashboard and CLI are functional, but the backend API layer connecting them is still in progress. Here's the roadmap:
+
+- **Backend API** — Connect the dashboard to live data (replacing mock data)
+- **Custom domains** — Bring your own domain with automatic SSL
+- **Build pipeline** — Server-side builds for frameworks like Next.js, Vite, and Astro
+- **Deploy previews** — Automatic preview URLs for pull requests
+- **Team collaboration** — Shared projects with role-based access
+
+---
+
+## Try It
+
+VeyNova is open source and under active development. If you're curious about how edge hosting works under the hood, or you just want a dead-simple way to deploy static sites — check it out on [GitHub](https://github.com/MuTe43).
+
+```bash
+npm i -g veynova
+veynova init
+veynova deploy
+```
+
+Two commands. 200+ edge nodes. Your site is live.

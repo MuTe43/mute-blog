@@ -1,0 +1,9 @@
+# *
+User-agent: *
+Allow: /
+
+# Host
+Host: mute-blog.vercel.app
+
+# Sitemaps
+Sitemap: mute-blog.vercel.app/sitemap.xml
