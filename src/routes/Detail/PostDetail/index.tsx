@@ -2,6 +2,8 @@ import React from "react"
 import PostHeader from "./PostHeader"
 import Footer from "./PostFooter"
 import CommentBox from "./CommentBox"
+import PostNavigation from "./PostNavigation"
+import TableOfContents from "./TableOfContents"
 import Category from "src/components/Category"
 import styled from "@emotion/styled"
 import MdxRenderer from "../components/MdxRenderer"
@@ -18,6 +20,7 @@ const PostDetail: React.FC<Props> = () => {
 
   return (
     <StyledWrapper>
+      {data.type[0] === "Post" && <TableOfContents />}
       <article>
         {category && (
           <div css={{ marginBottom: "0.5rem" }}>
@@ -32,6 +35,7 @@ const PostDetail: React.FC<Props> = () => {
         </div>
         {data.type[0] === "Post" && (
           <>
+            <PostNavigation />
             <Footer />
             <CommentBox data={data} />
           </>
