@@ -1,0 +1,263 @@
+---
+title: "Building Server Lens — A Discord Member Scraper That Actually Gets Everyone"
+slug: "building-server-lens"
+date: "2026-03-28"
+status: "Public"
+type: "Post"
+tags: ["python", "discord", "fastapi", "websocket", "project"]
+category: "Projects"
+summary: "How I built Server Lens — a self-hosted Discord member scraper that uses the Gateway WebSocket API to pull full member lists, including offline users, with annotation and export tools."
+thumbnail: "/posts/building-server-lens/banner.png"
+fullWidth: false
+author:
+  name: "Wajdi"
+---
+
+# Building Server Lens — A Discord Member Scraper That Actually Gets Everyone
+
+If you've ever tried to get a full member list from a Discord server, you know the pain. The REST API caps you at online members. Third-party bots either require admin permissions you don't have or store your data on someone else's server. I wanted something simple: give it a token, pick a server, get *every* member — including the ones who've been offline for months.
+
+So I built **Server Lens** — a self-hosted Discord member scraper with annotation tools and data export, all running locally on your machine.
+
+Check out the [GitHub repo](https://github.com/MuTe43/Discord-member-scraper).
+
+![Server Lens banner](/posts/building-server-lens/banner.png)
+
+---
+
+## Why Not Just Use the REST API?
+
+Discord's REST API is intentionally limited for member enumeration. The [`GET /guilds/{id}/members`](https://discord.com/developers/docs/resources/guild#list-guild-members) endpoint requires the [`SERVER MEMBERS INTENT`](https://discord.com/developers/docs/events/gateway#gateway-intents) and bot permissions, and even then it paginates in chunks of 1000. For a user token, you get even less — the member sidebar only shows online users.
+
+The trick is the [**Gateway WebSocket API**](https://discord.com/developers/docs/events/gateway). This is the same connection the Discord client uses when you open a server and scroll through the member list. By speaking the [Gateway protocol](https://discord.com/developers/docs/topics/gateway) directly, Server Lens can request member chunks the same way the official client does — no bot, no special permissions, just your regular user token.
+
+---
+
+## The Architecture
+
+```
+Frontend (Vanilla JS SPA)
+    |
+    | HTTP + Server-Sent Events
+    v
+FastAPI Backend (Python 3.11+)
+    |--- gateway.py     Discord Gateway WebSocket session
+    |--- scraper.py     Scraping orchestration + REST helpers
+    |--- models.py      Pydantic request validation
+    |--- main.py        Routes, data persistence, security headers
+    |
+    v
+Discord Gateway API v9  (WebSocket + zlib)
+Discord REST API v9     (guild info, user guilds)
+    |
+    v
+data.json               Local flat-file storage
+```
+
+The entire stack is two layers: a FastAPI backend that manages Gateway connections and serves the API, and a vanilla JS frontend that provides the UI. No build step, no bundler, no framework. The frontend is served as static files directly by FastAPI.
+
+![Server Lens architecture diagram](/posts/building-server-lens/Scraper_Architecture.png)
+
+---
+
+## The Two-Phase Scraping Strategy
+
+Getting every member from a Discord server is harder than it sounds. No single API operation returns them all. Server Lens uses a two-phase approach:
+
+### Phase 1: Range Sweep ([Op 14](https://discord.com/developers/docs/topics/opcodes-and-status-codes#gateway-gateway-opcodes))
+
+Discord's Op 14 (`GUILD_SUBSCRIPTIONS`) lets you subscribe to ranges of the member list — the same operation the client fires when you scroll the member sidebar. Server Lens sends subscription requests in 100-member chunks:
+
+```python
+# Subscribe to member list ranges in chunks of 100
+for i in range(0, member_count, 100):
+    ranges = [[i, min(i + 99, member_count - 1)]]
+    await session.send(14, {
+        "guild_id": guild_id,
+        "channels": {channel_id: ranges}
+    })
+```
+
+The Gateway responds with `GUILD_MEMBER_LIST_UPDATE` events containing member objects. This gets the bulk of members — but it misses some. Members with certain privacy settings or those deep in the list can slip through.
+
+### Phase 2: Search Sweep ([Op 8](https://discord.com/developers/docs/events/gateway-events#request-guild-members))
+
+To catch stragglers, Server Lens runs a second pass using Op 8 ([`REQUEST_GUILD_MEMBERS`](https://discord.com/developers/docs/events/gateway-events#request-guild-members)) — the same operation triggered when you type in the member search box. It queries every letter a-z and digits 0-9:
+
+```python
+# Search sweep to catch members missed by range sweep
+for char in "abcdefghijklmnopqrstuvwxyz0123456789":
+    await session.send(8, {
+        "guild_id": guild_id,
+        "query": char,
+        "limit": 100
+    })
+```
+
+The Gateway responds with [`GUILD_MEMBERS_CHUNK`](https://discord.com/developers/docs/events/gateway-events#guild-members-chunk) events. Combined with Phase 1, this captures virtually every non-bot member in the server.
+
+Both phases feed into a single deduplicated dictionary — if a member appears in both sweeps, they're merged, not duplicated.
+
+---
+
+## Gateway Session Management
+
+The Gateway connection is the most complex part of the project. Discord's Gateway uses WebSocket with [zlib-stream compression](https://discord.com/developers/docs/topics/gateway#transport-compression), requires [heartbeating](https://discord.com/developers/docs/events/gateway#heartbeating), and will disconnect you if you don't follow the protocol precisely.
+
+The `GatewaySession` class handles all of this:
+
+- **zlib decompression** — Gateway frames are binary [zlib-compressed](https://discord.com/developers/docs/topics/gateway#transport-compression). Each frame is appended to a buffer and decompressed when the flush marker (`\x00\x00\xff\xff`) appears.
+- **Heartbeat loop** — After receiving [Op 10 (HELLO)](https://discord.com/developers/docs/events/gateway-events#hello), the session starts sending [heartbeats](https://discord.com/developers/docs/events/gateway#heartbeating) at 40% of the provided interval. Miss a heartbeat ACK and the connection is presumed dead.
+- **IDENTIFY handshake** — [Op 2](https://discord.com/developers/docs/events/gateway-events#identify) authenticates the session with the token, declaring browser capabilities and [intents](https://discord.com/developers/docs/events/gateway#gateway-intents).
+- **Reconnection** — On disconnect or [Op 7 (RECONNECT)](https://discord.com/developers/docs/topics/opcodes-and-status-codes#gateway-gateway-opcodes), the session tears down and re-establishes cleanly.
+- **Session pooling** — Sessions are cached per token with a max of 10 concurrent sessions, 30-minute idle eviction, and a 6-second cooldown between IDENTIFY calls to respect Discord's [rate limits](https://discord.com/developers/docs/topics/rate-limits).
+
+```python
+class GatewaySession:
+    # https://discord.com/developers/docs/topics/gateway#connecting
+    GATEWAY_URL = "wss://gateway.discord.gg/?v=9&encoding=json&compress=zlib-stream"
+
+    async def connect(self):
+        self._ws = await self._http.ws_connect(self.GATEWAY_URL)
+        self._zlib = zlib.decompressobj()
+        asyncio.create_task(self._read_loop())
+```
+
+---
+
+## Real-Time Progress with SSE
+
+Scraping a large server can take a while — thousands of members means dozens of Gateway round-trips. Instead of making the user stare at a spinner, Server Lens streams progress updates via **Server-Sent Events (SSE)**.
+
+The `/api/scrape` endpoint returns an SSE stream that emits status messages as the scrape progresses:
+
+```
+data: {"status": "connecting", "message": "Connecting to Gateway..."}
+data: {"status": "phase1", "message": "Range sweep: 400/2847 members"}
+data: {"status": "phase1", "message": "Range sweep: 800/2847 members"}
+data: {"status": "phase2", "message": "Search sweep: querying 'f'"}
+data: {"status": "complete", "message": "Done — 2,831 members scraped"}
+```
+
+The frontend renders this as a live progress indicator. The SSE connection has a 3-minute timeout via `AbortController` — if the scrape stalls, it fails cleanly instead of hanging forever.
+
+---
+
+## Annotation System: Quirk Tags & Notes
+
+Scraping members is only half the story. The real value comes from being able to annotate them. Server Lens provides two annotation tools:
+
+**Quirk Tags** — Custom labels you can attach to any member. Think of them like tags in a CRM: "active", "lurker", "mod", "artist", whatever categories make sense for your use case. Tags are filterable, so you can quickly narrow down the member list to just the members tagged "moderator" or "contributor".
+
+**Notes** — Freeform text (up to 10,000 characters) per member. Context that doesn't fit in a tag goes here — conversation history, role justification, contact info, whatever you need.
+
+Both annotations persist across re-scrapes. When you re-scrape a server, Server Lens merges new member data with existing annotations — new members get added, departed members stay (with their tags and notes intact), and existing members get updated info without losing their annotations.
+
+---
+
+## Data Export
+
+All scraped data can be exported in two formats:
+
+**CSV** — Clean columnar format with Name, Username, ID, Joined date, Roles, Quirks, and Notes. Drop it into a spreadsheet and you're ready to go.
+
+**JSON** — Full structured export with server metadata, resolved role names (not raw IDs), and an export timestamp. Ideal for programmatic consumption or archival.
+
+```json
+{
+  "server": {
+    "name": "My Server",
+    "member_count": 2831,
+    "export_date": "2026-03-28T14:30:00Z"
+  },
+  "members": [
+    {
+      "name": "alice",
+      "username": "@alice",
+      "id": "123456789",
+      "joined_at": "2024-01-15T12:30:00Z",
+      "roles": ["Moderator", "OG"],
+      "quirks": ["active", "helpful"],
+      "notes": "Runs the #help channel"
+    }
+  ]
+}
+```
+
+---
+
+## Security & Privacy
+
+Since this tool handles Discord tokens, security was a first-class concern:
+
+- **Token stays local** — Your token is stored only in the browser's `sessionStorage` (cleared when the tab closes). It's sent directly to Discord's API via HTTPS, never logged or persisted server-side.
+- **100% self-hosted** — All data lives in a local `data.json` file on your machine. No external servers, no telemetry, no phone-home.
+- **Security headers** — The backend sets strict CSP, X-Frame-Options, and X-Content-Type-Options headers. Only `cdn.discordapp.com` and Google Fonts are whitelisted for external resources.
+- **Input validation** — Pydantic models enforce constraints on every request: guild IDs must be numeric, quirks capped at 100 per member, notes at 10,000 characters.
+- **Atomic writes** — Data persistence uses temp-file-then-rename to prevent corruption on crashes. All writes are protected by an asyncio lock for concurrency safety.
+
+---
+
+## The Frontend
+
+The UI is vanilla JavaScript — no React, no framework. It's a single-page app with a dark theme inspired by Discord's own aesthetic. Key features:
+
+- **Real-time search** with 150ms debounce for responsive filtering
+- **Sort by** name, join date (oldest or newest first)
+- **Filter by** tag status (tagged, untagged, all) or specific roles
+- **Resizable sidebar** — drag the member list edge to resize (200-500px)
+- **Toast notifications** — non-blocking feedback for all actions
+- **Role color display** — each member's roles render with their actual Discord colors, validated against a strict hex pattern before injection into CSS
+
+No build step means you can inspect and modify the frontend by just editing the files. Open `app.js` in your editor and refresh.
+
+Here's the full UI in action — member list on the left, detail panel with roles, quirk tags, and notes on the right:
+
+![Server Lens UI screenshot](/posts/building-server-lens/screenshot.png)
+
+---
+
+## Running It
+
+Server Lens runs anywhere Docker runs:
+
+```bash
+git clone https://github.com/MuTe43/Discord-member-scraper.git
+cd Discord-member-scraper
+docker compose up
+```
+
+Open `http://localhost:8000`, paste your Discord token, pick a server, and scrape. Or skip Docker and run it directly:
+
+```bash
+cd backend
+pip install -r requirements.txt
+python main.py
+```
+
+Data persists in `backend/data.json` — mount it as a Docker volume to survive container restarts.
+
+---
+
+## What's Next
+
+- **SQLite storage** — Replace the JSON flat file for better performance with 10k+ member servers
+- **Virtual scrolling** — Render massive member lists without DOM bloat
+- **Rate-limit handling** — Smarter backoff for Discord REST API calls
+- **Bulk tagging** — Multi-select members and apply tags in batch
+- **Browser extension** — One-click scraping from any Discord server page
+
+---
+
+## Try It
+
+Server Lens is open source under MIT. If you need full Discord member lists with annotation tools and local-first privacy:
+
+- [GitHub](https://github.com/MuTe43/Discord-member-scraper)
+
+```bash
+docker compose up
+# → http://localhost:8000
+```
+
+Self-hosted. Full member lists. Your data stays yours.

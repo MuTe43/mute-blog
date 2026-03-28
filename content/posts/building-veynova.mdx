@@ -36,15 +36,15 @@ VeyNova is a monorepo with three independent services, each responsible for a di
 
 ### 1. The CLI (`veynova`)
 
-The CLI is the developer's main interface. It's built with **Node.js** and **Commander.js**, and published to npm as [`veynova`](https://www.npmjs.com/package/veynova).
+The CLI is the developer's main interface. It's built with **Node.js** and [**Commander.js**](https://github.com/tj/commander.js), and published to npm as [`veynova`](https://www.npmjs.com/package/veynova).
 
 **`veynova init`** scaffolds your project — it creates a `veynova.json` config file and auto-generates a GitHub Actions workflow so future pushes to `main` trigger deploys automatically.
 
 **`veynova deploy`** handles the heavy lifting:
 - Scans your build directory for deployable files
 - Validates your Cloudflare credentials
-- Checks plan limits against Supabase (free tier = 3 projects)
-- Uploads each file to **Cloudflare R2** with progress reporting
+- Checks plan limits against [Supabase](https://supabase.com/docs) (free tier = 3 projects)
+- Uploads each file to [**Cloudflare R2**](https://developers.cloudflare.com/r2/) with progress reporting
 - Records deployment metadata to the database
 
 ```javascript
@@ -60,7 +60,7 @@ Here's the package live on npm — 262 weekly downloads and counting:
 
 ### 2. The Edge Worker (`veynova-router`)
 
-This is where the magic happens. A **Cloudflare Worker** sits at the edge and routes incoming requests to the right files in R2 storage.
+This is where the magic happens. A [**Cloudflare Worker**](https://developers.cloudflare.com/workers/) sits at the edge and routes incoming requests to the right files in R2 storage.
 
 When someone visits `my-portfolio.veynova.app`, the worker:
 
@@ -69,7 +69,7 @@ When someone visits `my-portfolio.veynova.app`, the worker:
 3. Fetches the file from the R2 bucket
 4. Returns it with the correct `Content-Type` and cache headers
 
-Every deployed site automatically gets a `*.veynova.app` subdomain. The response is served from the nearest edge node with aggressive caching — `max-age=3600` with `stale-while-revalidate=86400`.
+Every deployed site automatically gets a `*.veynova.app` subdomain. The response is served from the nearest edge node with aggressive caching — [`max-age=3600`](https://developers.cloudflare.com/cache/how-to/configure-cache-status-code/#edge-ttl) with [`stale-while-revalidate=86400`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control#stale-while-revalidate).
 
 Here's the worker in the Cloudflare dashboard — bound to the R2 bucket:
 
@@ -84,11 +84,11 @@ And the R2 bucket storing all deployed assets:
 A **Next.js 16** web app with a dark, terminal-inspired UI. This is the control plane where users manage their projects, monitor deployments, and handle billing.
 
 **Tech stack:**
-- **Next.js** (App Router, React 19) — Server components for data fetching
-- **Clerk** — Authentication and user management
-- **Supabase** — Database for projects, deployments, and subscriptions
-- **Stripe** — Billing with checkout, portal, and webhook handling
-- **Tailwind CSS v4** — Styling with custom CSS variables
+- [**Next.js**](https://nextjs.org/docs) (App Router, [React 19](https://react.dev/blog/2024/12/05/react-19)) — Server components for data fetching
+- [**Clerk**](https://clerk.com/docs) — Authentication and user management
+- [**Supabase**](https://supabase.com/docs) — Database for projects, deployments, and subscriptions
+- [**Stripe**](https://docs.stripe.com/) — Billing with [checkout](https://docs.stripe.com/checkout), [portal](https://docs.stripe.com/customer-management/customer-portal), and [webhook](https://docs.stripe.com/webhooks) handling
+- [**Tailwind CSS v4**](https://tailwindcss.com/docs) — Styling with custom CSS variables
 
 Once signed in, you get a clean overview of all your deployed projects with their `*.veynova.app` subdomains:
 
@@ -129,11 +129,13 @@ Terminal                  Cloudflare R2              Edge Worker
 
 No build step on the server. No container spin-up. Files go from your machine to R2, and the worker serves them instantly from the edge.
 
+![VeyNova deploy flow diagram](/posts/building-veynova/veynova-flow.png)
+
 ---
 
 ## CI/CD Out of the Box
 
-When you run `veynova init`, it generates a GitHub Actions workflow:
+When you run `veynova init`, it generates a [GitHub Actions](https://docs.github.com/en/actions) workflow:
 
 ```yaml
 # .github/workflows/deploy.yml (auto-generated)
@@ -167,13 +169,13 @@ No configuration beyond adding two secrets to your GitHub repo.
 ## Design Decisions
 
 **Why Cloudflare R2 + Workers?**
-R2 has zero egress fees. That's a big deal for a hosting platform — bandwidth costs don't scale with traffic. Workers run at the edge in 200+ cities, so latency is minimal regardless of where your users are.
+R2 has [zero egress fees](https://developers.cloudflare.com/r2/pricing/). That's a big deal for a hosting platform — bandwidth costs don't scale with traffic. Workers run at the edge in [200+ cities](https://www.cloudflare.com/network/), so latency is minimal regardless of where your users are.
 
 **Why a CLI-first approach?**
 Developers live in the terminal. A CLI that does one thing well (deploy) is more useful than a dashboard with a drag-and-drop uploader. The dashboard exists for monitoring, not as the primary deploy mechanism.
 
 **Why Supabase for the database?**
-Fast to set up, Postgres under the hood, row-level security for multi-tenancy, and a generous free tier. It handles projects, deployments, and subscription state without needing to manage infrastructure.
+Fast to set up, Postgres under the hood, [row-level security](https://supabase.com/docs/guides/database/postgres/row-level-security) for multi-tenancy, and a generous free tier. It handles projects, deployments, and subscription state without needing to manage infrastructure.
 
 ---
 
