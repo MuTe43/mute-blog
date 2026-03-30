@@ -1,6 +1,5 @@
-import Image from "next/image"
 import Link from "next/link"
-import React, { useRef, useState } from "react"
+import React, { useCallback, useEffect, useRef, useState } from "react"
 import type { MDXComponents } from "mdx/types"
 
 const Video: React.FC<{
@@ -118,27 +117,83 @@ const CodeBlock: React.FC<{ children?: React.ReactNode }> = ({ children, ...prop
   )
 }
 
+const Lightbox: React.FC<{ src: string; alt: string; onClose: () => void }> = ({
+  src,
+  alt,
+  onClose,
+}) => {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose()
+    }
+    document.addEventListener("keydown", handleKey)
+    document.body.style.overflow = "hidden"
+    return () => {
+      document.removeEventListener("keydown", handleKey)
+      document.body.style.overflow = ""
+    }
+  }, [onClose])
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 9999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(0, 0, 0, 0.85)",
+        cursor: "zoom-out",
+        padding: "2rem",
+      }}
+    >
+      <img
+        src={src}
+        alt={alt}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          maxWidth: "90vw",
+          maxHeight: "90vh",
+          objectFit: "contain",
+          borderRadius: "0.5rem",
+          cursor: "default",
+        }}
+      />
+    </div>
+  )
+}
+
 const CustomImage: React.FC<
   React.DetailedHTMLProps<
     React.ImgHTMLAttributes<HTMLImageElement>,
     HTMLImageElement
   >
 > = ({ src, alt, ...props }) => {
+  const [open, setOpen] = useState(false)
+  const handleClose = useCallback(() => setOpen(false), [])
+
   if (!src) return null
-  if (src.startsWith("/")) {
-    return (
-      <span style={{ display: "block", position: "relative", width: "100%" }}>
-        <Image
-          src={src}
-          alt={alt || ""}
-          width={800}
-          height={450}
-          style={{ width: "100%", height: "auto", borderRadius: "0.5rem" }}
-        />
-      </span>
-    )
-  }
-  return <img src={src} alt={alt || ""} {...props} />
+  return (
+    <>
+      <img
+        src={src}
+        alt={alt || ""}
+        loading="lazy"
+        style={{
+          display: "block",
+          width: "100%",
+          height: "auto",
+          borderRadius: "0.5rem",
+          cursor: "zoom-in",
+        }}
+        onClick={() => setOpen(true)}
+        {...props}
+      />
+      {open && <Lightbox src={src} alt={alt || ""} onClose={handleClose} />}
+    </>
+  )
 }
 
 const CustomLink: React.FC<{ href?: string; children?: React.ReactNode }> = ({
